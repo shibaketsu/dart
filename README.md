@@ -11,6 +11,7 @@
 - **ダーツゲームシミュレータ**：TkinterベースのダーツボードUI
 - **複数のゲームモード**：COUNTUP、ダブルアウトなど複数のモードに対応
 - **クリケットゲーム対応**：クリケットゲームのターゲット設定
+- **HIDDEN CRICKET**：7つのターゲットをランダム抽選し、当たるまで非公開にするモード
 - **ダブルアウト表**：高スコア達成時の推奨ダーツ配置を提示
 - **アニメーション生成**：Manimを使用した「Hat Trick Award」などのアニメーション
 
@@ -79,7 +80,11 @@ manim -pl animation.py HatTrickAward
 
 - **SEGMENTS**：ダーツボードのセグメント配置（時計回り）
 - **CRICKET_TARGETS**：クリケットゲームのターゲット
+- **CRICKET_TARGET_POOL**：HIDDEN CRICKETで使う候補数字
+- **HIDDEN_CRICKET_TARGET_COUNT**：HIDDEN CRICKETで使う数字の数
 - **DOUBLE_OUT_TABLE**：ダブルアウト表の推奨配置
+
+HIDDEN CRICKETでは、ゲーム開始時に1〜20とBULLの候補から7つを抽選します。最初にその数字を当てたプレイヤーには、事前に選んだ1本または2本のボーナスが追加されます。
 
 ## ライセンス
 

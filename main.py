@@ -98,6 +98,7 @@ class DartsApp(tk.Tk):
         extra_modes = [
             ("INVERSE", "CRICKET INVERSE"),
             ("ALL CRICKET", "ALL CRICKET"),
+            ("HIDDEN", "HIDDEN CRICKET"),
         ]
         for label, mode_key in extra_modes:
             btn = create_btn(
@@ -155,6 +156,27 @@ class DartsApp(tk.Tk):
         tk.Button(config_frame, text="+", command=lambda: self.change_rounds(1)).pack(
             side="left"
         )
+
+        self.hidden_bonus_var = tk.IntVar(value=1)
+        tk.Label(
+            config_frame,
+            text="Hidden Bonus:",
+            bg="#1e293b",
+            fg="#94a3b8",
+        ).pack(side="left", padx=(20, 5))
+        for bonus in [1, 2]:
+            tk.Radiobutton(
+                config_frame,
+                text=str(bonus),
+                variable=self.hidden_bonus_var,
+                value=bonus,
+                bg="#1e293b",
+                fg="white",
+                selectcolor="#334155",
+                activebackground="#1e293b",
+                activeforeground="white",
+                highlightthickness=0,
+            ).pack(side="left")
 
         # -- Main Content --
         main_frame = tk.Frame(self, bg="#1e293b")
@@ -220,6 +242,16 @@ class DartsApp(tk.Tk):
         )
         self.suggest_lbl.pack(pady=5)
 
+        self.status_msg = ""
+        self.status_lbl = tk.Label(
+            left_panel,
+            text="",
+            bg="#1e293b",
+            fg="#f59e0b",
+            font=("Arial", 10, "bold"),
+        )
+        self.status_lbl.pack(pady=(0, 5))
+
         right_panel = tk.Frame(main_frame, bg="#1e293b", padx=20)
         right_panel.pack(side="right", expand=True, fill="both")
 
@@ -258,7 +290,9 @@ class DartsApp(tk.Tk):
             self.p_count_var.get(),
             self.round_var.get(),
             player_names=self.custom_names,
+            hidden_cricket_bonus=self.hidden_bonus_var.get(),
         )
+        self.status_msg = ""
         self.update_ui()
 
     def open_name_editor(self):
@@ -332,7 +366,7 @@ class DartsApp(tk.Tk):
         self.update_ui()
 
     def show_award(self, text):
-        print(f"*** AWARD: {text} ***")
+        self.status_msg = text
 
     def update_ui(self):
         curr_p = self.game.players[self.game.current_player_idx]
@@ -350,12 +384,16 @@ class DartsApp(tk.Tk):
         for widget in self.score_container.winfo_children():
             widget.destroy()
 
-        if "CRICKET" in self.game.mode:
+        if self.game.mode == "HIDDEN CRICKET":
+            self.draw_cricket_board()
+        elif "CRICKET" in self.game.mode:
             self.draw_cricket_board()
         else:
             self.draw_score_board()
 
         self.update_suggestion(curr_p)
+        self.status_lbl.config(text=self.status_msg)
+        self.status_msg = ""
         self.log_list.delete(0, tk.END)
         for entry in self.game.game_log:
             self.log_list.insert(tk.END, entry)
@@ -382,6 +420,7 @@ class DartsApp(tk.Tk):
 
     def draw_cricket_board(self):
         # レイアウト設定
+        hidden_mode = self.game.mode == "HIDDEN CRICKET"
         targets = self.game.active_targets
         players = self.game.players
         num_players = len(players)
@@ -406,10 +445,7 @@ class DartsApp(tk.Tk):
 
         for i, p in enumerate(players):
             is_active = i == self.game.current_player_idx
-            col = (i * 2 if is_duel else i + 1) if is_duel else i + 1
-            # デュエルの場合はP1が左(0)、P2が右(2)
-            if is_duel:
-                col = 0 if i == 0 else 2
+            col = 0 if is_duel and i == 0 else 2 if is_duel else i + 1
 
             p_frame = tk.Frame(
                 header_frame,
@@ -448,12 +484,17 @@ class DartsApp(tk.Tk):
             row_bg = "#1e293b" if r % 2 == 0 else "#161e2e"
 
             # 中央の数字ラベル
+            is_revealed = not hidden_mode or target in self.game.revealed_targets
             t_text = "BULL" if target == 25 else str(target)
+            t_fg = "#f0c040"
+            if hidden_mode and not is_revealed:
+                t_text = "?"
+                t_fg = "#94a3b8"
             target_lbl = tk.Label(
                 marks_frame,
                 text=t_text,
                 bg="#334155",
-                fg="#f0c040",
+                fg=t_fg,
                 font=("Arial", 12, "bold"),
                 width=5,
                 pady=4,
@@ -464,7 +505,7 @@ class DartsApp(tk.Tk):
 
             # 各プレイヤーのマーク
             for i, p in enumerate(players):
-                marks = p.marks.get(target, 0)
+                marks = p.marks.get(target, 0) if is_revealed else 0
                 # マークの記号化
                 mark_str = (
                     "⦻"
@@ -500,17 +541,20 @@ class DartsApp(tk.Tk):
             ).grid(row=0, column=col, padx=5, sticky="s")
 
         for r, target in enumerate(targets):
+            is_revealed = not hidden_mode or target in self.game.revealed_targets
             t_label = "BULL" if target == 25 else str(target)
+            if hidden_mode and not is_revealed:
+                t_label = "?"
             tk.Label(
                 self.score_container,
                 text=t_label,
                 bg="#1e293b",
-                fg="white",
+                fg="#94a3b8" if hidden_mode and not is_revealed else "white",
                 font=target_font,
             ).grid(row=r + 1, column=0, pady=1 if is_large_mode else 2)
 
             for c, p in enumerate(self.game.players):
-                marks = p.marks.get(target, 0)
+                marks = p.marks.get(target, 0) if is_revealed else 0
                 mark_str = "・"
                 if marks == 1:
                     mark_str = "/"

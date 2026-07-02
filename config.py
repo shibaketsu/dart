@@ -6,6 +6,12 @@ SEGMENTS = [20, 1, 18, 4, 13, 6, 10, 15, 2, 17, 3, 19, 7, 16, 8, 11, 14, 9, 12, 
 # クリケットで使用するターゲット
 CRICKET_TARGETS = [20, 19, 18, 17, 16, 15, 25]
 
+# HIDDEN CRICKETで抽選する候補数字
+CRICKET_TARGET_POOL = list(range(1, 21)) + [25]
+
+# HIDDEN CRICKETで使用するターゲット数
+HIDDEN_CRICKET_TARGET_COUNT = 7
+
 # ダブルアウト（アレンジ）表
 DOUBLE_OUT_TABLE = {
     # High Finishes (3 Darts)

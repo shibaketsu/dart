@@ -1,6 +1,8 @@
 # models.py
 import copy
-from config import CRICKET_TARGETS
+import random
+
+from config import CRICKET_TARGETS, CRICKET_TARGET_POOL, HIDDEN_CRICKET_TARGET_COUNT
 
 
 class HitResult:
@@ -52,9 +54,20 @@ class DartsGame:
         self.history = []
         self.game_log = []
         self.active_targets = CRICKET_TARGETS
+        self.hidden_cricket_targets = []
+        self.revealed_targets = set()
+        self.current_turn_limit = 3
+        self.hidden_cricket_bonus = 1
 
     # 変更: player_names引数を追加
-    def setup_game(self, mode, player_count, max_rounds, player_names=None):
+    def setup_game(
+        self,
+        mode,
+        player_count,
+        max_rounds,
+        player_names=None,
+        hidden_cricket_bonus=1,
+    ):
         self.mode = mode
         self.max_rounds = max_rounds
         self.current_player_idx = 0
@@ -63,6 +76,12 @@ class DartsGame:
         self.winner = None
         self.history = []
         self.game_log = []
+        self.current_turn_limit = 3
+        self.hidden_cricket_bonus = (
+            1 if hidden_cricket_bonus not in [1, 2] else hidden_cricket_bonus
+        )
+        self.hidden_cricket_targets = []
+        self.revealed_targets = set()
 
         start_score = 0
         self.active_targets = []
@@ -74,6 +93,11 @@ class DartsGame:
             self.active_targets = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
         elif mode == "ALL CRICKET":
             self.active_targets = list(range(1, 21)) + [25]
+        elif mode == "HIDDEN CRICKET":
+            self.hidden_cricket_targets = random.sample(
+                CRICKET_TARGET_POOL, HIDDEN_CRICKET_TARGET_COUNT
+            )
+            self.active_targets = list(self.hidden_cricket_targets)
         elif mode in ["301", "501"]:
             start_score = int(mode)
             self.active_targets = []
@@ -99,6 +123,10 @@ class DartsGame:
             "current_throws": copy.deepcopy(self.current_throws),
             "winner": copy.deepcopy(self.winner),
             "game_log": copy.deepcopy(self.game_log),
+            "current_turn_limit": self.current_turn_limit,
+            "hidden_cricket_targets": copy.deepcopy(self.hidden_cricket_targets),
+            "revealed_targets": copy.deepcopy(self.revealed_targets),
+            "hidden_cricket_bonus": self.hidden_cricket_bonus,
         }
         self.history.append(state)
 
@@ -112,6 +140,12 @@ class DartsGame:
             self.current_throws = copy.deepcopy(state["current_throws"])
             self.winner = copy.deepcopy(state["winner"])
             self.game_log = copy.deepcopy(state["game_log"])
+            self.current_turn_limit = state.get("current_turn_limit", 3)
+            self.hidden_cricket_targets = copy.deepcopy(
+                state.get("hidden_cricket_targets", [])
+            )
+            self.revealed_targets = copy.deepcopy(state.get("revealed_targets", set()))
+            self.hidden_cricket_bonus = state.get("hidden_cricket_bonus", 1)
             return True
         return False
 
@@ -120,6 +154,7 @@ class DartsGame:
             return None
 
         self.save_state()
+        award = None
 
         score_val = raw_num * mult
         is_bull = raw_num == 25
@@ -151,7 +186,15 @@ class DartsGame:
         # クリケット系全般
         elif "CRICKET" in self.mode:
             if raw_num in self.active_targets:
+                is_hidden_cricket = self.mode == "HIDDEN CRICKET"
+                newly_revealed = False
+                if is_hidden_cricket and raw_num not in self.revealed_targets:
+                    self.revealed_targets.add(raw_num)
+                    newly_revealed = True
+
                 marks_to_add = mult
+                if newly_revealed:
+                    marks_to_add += self.hidden_cricket_bonus
                 needed = 3 - current_p.marks[raw_num]
 
                 if needed > 0:
@@ -174,7 +217,8 @@ class DartsGame:
                         self.winner = current_p
                         return "WIN"
 
-        award = None
+                if newly_revealed:
+                    award = f"REVEAL {raw_num} (+{self.hidden_cricket_bonus})"
         if len(self.current_throws) == 3:
             total = sum(t.score for t in self.current_throws)
             if "CRICKET" not in self.mode:
@@ -185,7 +229,7 @@ class DartsGame:
                 if all(t.is_bull for t in self.current_throws):
                     award = "HAT TRICK"
 
-        if len(self.current_throws) >= 3:
+        if len(self.current_throws) >= self.current_turn_limit:
             self.change_turn()
 
         return award
