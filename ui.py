@@ -4,21 +4,104 @@ import math
 from config import SEGMENTS
 
 
+class ScrollableFrame(tk.Frame):
+    """Keep long scoreboards accessible without expanding the window."""
+
+    def __init__(self, master):
+        from tkinter import ttk
+
+        super().__init__(master, bg="#1e293b")
+        self._fit_height = False
+        self.canvas = tk.Canvas(self, bg="#1e293b", highlightthickness=0,
+                                width=1, height=1)
+        scrollbar = ttk.Scrollbar(self, command=self.canvas.yview)
+        self.canvas.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side="right", fill="y")
+        self.canvas.pack(side="left", fill="both", expand=True)
+        self.content = tk.Frame(self.canvas, bg="#1e293b")
+        self._window = self.canvas.create_window(0, 0, window=self.content, anchor="nw")
+        self.content.bind("<Configure>", self._update_region)
+        self.canvas.bind("<Configure>", self._resize)
+        # Bind on this widget's descendants only, never globally on the app.
+        self._wheel_tag = f"ScoreScroll{id(self)}"
+        self.bind_class(self._wheel_tag, "<MouseWheel>", self._on_wheel)
+        self.bind_class(self._wheel_tag, "<Button-4>",
+                        lambda event: self._scroll(-1))
+        self.bind_class(self._wheel_tag, "<Button-5>",
+                        lambda event: self._scroll(1))
+        self.canvas.bindtags((self._wheel_tag,) + self.canvas.bindtags())
+
+    def _update_region(self, event=None):
+        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+        self._tag_children(self.content)
+
+    def _tag_children(self, widget):
+        if self._wheel_tag not in widget.bindtags():
+            widget.bindtags((self._wheel_tag,) + widget.bindtags())
+        for child in widget.winfo_children():
+            self._tag_children(child)
+
+    def _resize(self, event):
+        self.canvas.itemconfigure(self._window, width=event.width,
+                                  height=event.height if self._fit_height else 0)
+
+    def set_fit_height(self, enabled):
+        """Let a table distribute its rows across the available viewport."""
+        if enabled != self._fit_height:
+            self._fit_height = enabled
+            self.canvas.itemconfigure(
+                self._window, height=self.canvas.winfo_height() if enabled else 0)
+            self.canvas.yview_moveto(0)
+
+    def _on_wheel(self, event):
+        delta = event.delta
+        if self.tk.call("tk", "windowingsystem") != "aqua":
+            delta = int(delta / 120) or (1 if delta > 0 else -1 if delta < 0 else 0)
+        self._scroll(-int(delta))
+        return "break"
+
+    def _scroll(self, units):
+        if self.content.winfo_height() > self.canvas.winfo_height():
+            self.canvas.yview_scroll(units, "units")
+        return "break"
+
+
 class DartboardCanvas(tk.Canvas):
+    # Keep the original colours visible beneath a distinguishable state tint.
+    CRICKET_COLORS = {
+        "scoring": "#f87171",
+        "open": "#facc15",
+        "closed": None,
+    }
+    TINT_OPACITY = 0.50
+
     def __init__(self, master, size=400, on_hit_callback=None):
         super().__init__(
-            master, width=size, height=size, bg="#222", highlightthickness=0
+            master, width=size, height=size, bg="#0f172a", highlightthickness=0,
+            cursor="crosshair"
         )
         self.size = size
         self.cx = size / 2
         self.cy = size / 2
         self.on_hit = on_hit_callback
+        self._target_states = None
         self.bind("<Button-1>", self.handle_click)
+        self.bind("<Configure>", self._resize)
         self.draw_board()
+
+    def _resize(self, event):
+        size = min(event.width, event.height)
+        cx, cy = event.width / 2, event.height / 2
+        if (size, cx, cy) != (self.size, self.cx, self.cy):
+            self.size, self.cx, self.cy = size, cx, cy
+            self.draw_board()
 
     def draw_board(self):
         self.delete("all")
-        self.create_oval(0, 0, self.size, self.size, fill="#333")
+        radius = self.size / 2 - 1
+        self.create_oval(self.cx - radius, self.cy - radius,
+                         self.cx + radius, self.cy + radius,
+                         fill="#182337", outline="#334155")
 
         R = [
             0,
@@ -37,8 +120,8 @@ class DartboardCanvas(tk.Canvas):
             start_a = angle_center - (angle_step / 2)
 
             is_odd = i % 2 == 0
-            c_base = "black" if is_odd else "#f0f0f0"
-            c_accent = "#e11d48" if is_odd else "#10b981"
+            c_base = "black" if is_odd else "#ffffff"
+            c_accent = "#e11d48" if is_odd else "#2563eb"
 
             self.create_arc(
                 self.cx - R[6],
@@ -49,6 +132,7 @@ class DartboardCanvas(tk.Canvas):
                 extent=angle_step,
                 fill=c_accent,
                 outline="white",
+                tags=(f"target_{num}_ring",),
             )
             self.create_arc(
                 self.cx - R[5],
@@ -59,6 +143,7 @@ class DartboardCanvas(tk.Canvas):
                 extent=angle_step,
                 fill=c_base,
                 outline="white",
+                tags=(f"target_{num}_single",),
             )
             self.create_arc(
                 self.cx - R[4],
@@ -69,6 +154,7 @@ class DartboardCanvas(tk.Canvas):
                 extent=angle_step,
                 fill=c_accent,
                 outline="white",
+                tags=(f"target_{num}_ring",),
             )
             self.create_arc(
                 self.cx - R[3],
@@ -79,14 +165,16 @@ class DartboardCanvas(tk.Canvas):
                 extent=angle_step,
                 fill=c_base,
                 outline="white",
+                tags=(f"target_{num}_single",),
             )
 
-            rad_txt = R[6] + 20
+            rad_txt = self.size * 0.475
             rads = math.radians(angle_center)
             tx = self.cx + rad_txt * math.cos(rads)
             ty = self.cy - rad_txt * math.sin(rads)
             self.create_text(
-                tx, ty, text=str(num), fill="white", font=("Arial", 12, "bold")
+                tx, ty, text=str(num), fill="white",
+                font=("Arial", max(8, int(self.size * 0.035)), "bold")
             )
 
         self.create_oval(
@@ -94,8 +182,9 @@ class DartboardCanvas(tk.Canvas):
             self.cy - R[2],
             self.cx + R[2],
             self.cy + R[2],
-            fill="#10b981",
+            fill="#2563eb",
             outline="white",
+            tags=("target_25_single",),
         )
         self.create_oval(
             self.cx - R[1],
@@ -104,7 +193,37 @@ class DartboardCanvas(tk.Canvas):
             self.cy + R[1],
             fill="#e11d48",
             outline="white",
+            tags=("target_25_ring",),
         )
+        self._apply_target_colors()
+
+    def set_target_states(self, states=None):
+        """Colour cricket targets; None restores the standard dartboard."""
+        if states == self._target_states:
+            return
+        self._target_states = dict(states) if states is not None else None
+        self._apply_target_colors()
+
+    def _apply_target_colors(self):
+        for i, target in enumerate(list(SEGMENTS) + [25]):
+            single = "#2563eb" if target == 25 else "#000000" if i % 2 == 0 else "#ffffff"
+            ring = "#e11d48" if target == 25 or i % 2 == 0 else "#2563eb"
+            if self._target_states is not None:
+                overlay = self.CRICKET_COLORS[self._target_states[target]]
+                if overlay is not None:
+                    single = self._blend_tint(single, overlay)
+                    ring = self._blend_tint(ring, overlay)
+            self.itemconfigure(f"target_{target}_single", fill=single, outline="white")
+            self.itemconfigure(f"target_{target}_ring", fill=ring, outline="white")
+
+    @classmethod
+    def _blend_tint(cls, base, overlay):
+        channels = [
+            round(int(base[i:i + 2], 16) * (1 - cls.TINT_OPACITY)
+                  + int(overlay[i:i + 2], 16) * cls.TINT_OPACITY)
+            for i in (1, 3, 5)
+        ]
+        return "#" + "".join(f"{value:02x}" for value in channels)
 
     def handle_click(self, event):
         if not self.on_hit:

@@ -56,6 +56,7 @@ class DartsGame:
         self.active_targets = CRICKET_TARGETS
         self.hidden_cricket_targets = []
         self.revealed_targets = set()
+        self.hidden_missed_targets = set()
         self.current_turn_limit = 3
         self.hidden_cricket_bonus = 1
 
@@ -82,6 +83,7 @@ class DartsGame:
         )
         self.hidden_cricket_targets = []
         self.revealed_targets = set()
+        self.hidden_missed_targets = set()
 
         start_score = 0
         self.active_targets = []
@@ -126,6 +128,7 @@ class DartsGame:
             "current_turn_limit": self.current_turn_limit,
             "hidden_cricket_targets": copy.deepcopy(self.hidden_cricket_targets),
             "revealed_targets": copy.deepcopy(self.revealed_targets),
+            "hidden_missed_targets": self.hidden_missed_targets.copy(),
             "hidden_cricket_bonus": self.hidden_cricket_bonus,
         }
         self.history.append(state)
@@ -145,6 +148,7 @@ class DartsGame:
                 state.get("hidden_cricket_targets", [])
             )
             self.revealed_targets = copy.deepcopy(state.get("revealed_targets", set()))
+            self.hidden_missed_targets = state.get("hidden_missed_targets", set()).copy()
             self.hidden_cricket_bonus = state.get("hidden_cricket_bonus", 1)
             return True
         return False
@@ -185,6 +189,9 @@ class DartsGame:
 
         # クリケット系全般
         elif "CRICKET" in self.mode:
+            if (self.mode == "HIDDEN CRICKET" and raw_num in CRICKET_TARGET_POOL
+                    and raw_num not in self.active_targets):
+                self.hidden_missed_targets.add(raw_num)
             if raw_num in self.active_targets:
                 is_hidden_cricket = self.mode == "HIDDEN CRICKET"
                 newly_revealed = False
