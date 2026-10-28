@@ -12,6 +12,7 @@ class HitResult:
         self.raw_number = raw_number
         self.is_bull = is_bull
         self.display = self._get_display()
+        self.cricket_marks = 0
 
     def _get_display(self):
         if self.raw_number == 0:
@@ -28,6 +29,11 @@ class Player:
         self.name = name
         self.score = start_score
         self.round_start_score = start_score
+        self.darts_thrown = 0
+        self.points_thrown = 0
+        self.bulls_hit = 0
+        self.cricket_marks = 0
+        self.awards = {}
         # ターゲットが指定されていない場合はデフォルト（通常のクリケット）を使用
         if targets is None:
             self.marks = {t: 0 for t in CRICKET_TARGETS}
@@ -39,6 +45,11 @@ class Player:
         p = Player(self.id, self.name, self.score, targets=list(self.marks.keys()))
         p.round_start_score = self.round_start_score
         p.marks = self.marks.copy()
+        p.darts_thrown = self.darts_thrown
+        p.points_thrown = self.points_thrown
+        p.bulls_hit = self.bulls_hit
+        p.cricket_marks = self.cricket_marks
+        p.awards = self.awards.copy()
         return p
 
 
@@ -59,6 +70,7 @@ class DartsGame:
         self.hidden_missed_targets = set()
         self.current_turn_limit = 3
         self.hidden_cricket_bonus = 1
+        self.last_awards = []
 
     # 変更: player_names引数を追加
     def setup_game(
@@ -78,6 +90,7 @@ class DartsGame:
         self.history = []
         self.game_log = []
         self.current_turn_limit = 3
+        self.last_awards = []
         self.hidden_cricket_bonus = (
             1 if hidden_cricket_bonus not in [1, 2] else hidden_cricket_bonus
         )
@@ -130,6 +143,7 @@ class DartsGame:
             "revealed_targets": copy.deepcopy(self.revealed_targets),
             "hidden_missed_targets": self.hidden_missed_targets.copy(),
             "hidden_cricket_bonus": self.hidden_cricket_bonus,
+            "last_awards": self.last_awards.copy(),
         }
         self.history.append(state)
 
@@ -150,6 +164,7 @@ class DartsGame:
             self.revealed_targets = copy.deepcopy(state.get("revealed_targets", set()))
             self.hidden_missed_targets = state.get("hidden_missed_targets", set()).copy()
             self.hidden_cricket_bonus = state.get("hidden_cricket_bonus", 1)
+            self.last_awards = state.get("last_awards", []).copy()
             return True
         return False
 
@@ -158,6 +173,7 @@ class DartsGame:
             return None
 
         self.save_state()
+        self.last_awards = []
         award = None
 
         score_val = raw_num * mult
@@ -170,6 +186,9 @@ class DartsGame:
         self.current_throws.append(hit)
 
         current_p = self.players[self.current_player_idx]
+        current_p.darts_thrown += 1
+        current_p.points_thrown += score_val
+        current_p.bulls_hit += int(is_bull)
 
         if self.mode == "COUNTUP":
             current_p.score += score_val
@@ -183,7 +202,7 @@ class DartsGame:
             elif temp_score == 0:
                 current_p.score = 0
                 self.winner = current_p
-                return "WIN"
+                return self._complete_award("WIN")
             else:
                 current_p.score = temp_score
 
@@ -193,6 +212,9 @@ class DartsGame:
                     and raw_num not in self.active_targets):
                 self.hidden_missed_targets.add(raw_num)
             if raw_num in self.active_targets:
+                if any(p.marks[raw_num] < 3 for p in self.players):
+                    current_p.cricket_marks += mult
+                    hit.cricket_marks = mult
                 is_hidden_cricket = self.mode == "HIDDEN CRICKET"
                 newly_revealed = False
                 if is_hidden_cricket and raw_num not in self.revealed_targets:
@@ -222,23 +244,67 @@ class DartsGame:
                             lowest = False
                     if lowest:
                         self.winner = current_p
-                        return "WIN"
+                        return self._complete_award("WIN")
 
                 if newly_revealed:
                     award = f"REVEAL {raw_num} (+{self.hidden_cricket_bonus})"
-        if len(self.current_throws) == 3:
-            total = sum(t.score for t in self.current_throws)
-            if "CRICKET" not in self.mode:
-                if total >= 151:
-                    award = "HIGH TON"
-                elif total >= 100:
-                    award = "LOW TON"
-                if all(t.is_bull for t in self.current_throws):
-                    award = "HAT TRICK"
+        award = self._complete_award(award)
 
         if len(self.current_throws) >= self.current_turn_limit:
             self.change_turn()
 
+        return award
+
+    def _complete_award(self, fallback=None, completed=False):
+        throws = self.current_throws
+        if not throws or (len(throws) < 3 and fallback != 'WIN' and not completed):
+            return fallback
+        cricket = 'CRICKET' in self.mode
+        full = len(throws) == 3
+        available_marks = sum(t.cricket_marks for t in throws)
+        all_bull = full and all(t.is_bull for t in throws)
+        same_bed = (full and not throws[0].is_bull
+                    and throws[0].multiplier in (2, 3)
+                    and len({(t.raw_number, t.multiplier) for t in throws}) == 1
+                    and (not cricket or all(t.cricket_marks for t in throws)))
+        names = []
+        if all_bull and all(t.multiplier == 2 for t in throws):
+            names.append('THREE IN THE BLACK')
+        if (cricket and full and available_marks == 9
+                and len({t.raw_number for t in throws}) == 3):
+            names.append('WHITE HORSE')
+        if not cricket and full and all(t.raw_number == 20 and t.multiplier == 3 for t in throws):
+            names.append('TON 80')
+        if same_bed:
+            names.append('THREE IN A BED')
+        if all_bull:
+            names.append('HAT TRICK')
+        player = self.players[self.current_player_idx]
+        if not cricket:
+            if self.mode in ('301', '501') and fallback == 'WIN' and player.round_start_score >= 100:
+                names.append('HIGH OUT')
+            total = sum(t.score for t in throws)
+            if 151 <= total <= 180:
+                names.append('HIGH TON')
+            elif 100 <= total <= 150:
+                names.append('LOW TON')
+        elif 5 <= available_marks <= 9:
+            # Count only marks available at impact, never Hidden discovery bonuses.
+            names.append(f'{available_marks} COUNT')
+        if sum(t.is_bull for t in throws) == 1:
+            names.append('ONE BULL')
+        self.last_awards = names
+        for name in names:
+            player.awards[name] = player.awards.get(name, 0) + 1
+        return names[0] if names else fallback
+
+    def skip_turn(self):
+        if self.winner:
+            return None
+        self.save_state()
+        self.last_awards = []
+        award = self._complete_award(completed=True)
+        self.change_turn()
         return award
 
     def change_turn(self, bust=False):

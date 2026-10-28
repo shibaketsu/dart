@@ -1,7 +1,15 @@
 # main.py
 import tkinter as tk
-from tkinter import Toplevel, Entry
+from tkinter import Toplevel, Entry, messagebox
 import platform
+import os
+import uuid
+from pathlib import Path
+
+from PIL import Image, ImageDraw, ImageOps, ImageTk
+from members import MemberStore
+from member_ui import MemberWindow
+from awards import AwardPlayer, VIDEO_NAMES
 
 try:
     from tkmacosx import Button as MacButton
@@ -14,7 +22,7 @@ from config import DOUBLE_OUT_TABLE
 
 
 class DartsApp(tk.Tk):
-    def __init__(self):
+    def __init__(self, data_directory=None):
         super().__init__()
         self.title("Python Darts Master")
         self.geometry("1080x800")
@@ -22,6 +30,16 @@ class DartsApp(tk.Tk):
         self.configure(bg="#1e293b")
 
         self.game = DartsGame()
+        directory = data_directory or os.environ.get('DARTS_DATA_DIR') or Path(__file__).resolve().parent / 'data'
+        self.member_store = MemberStore(directory)
+        self.roster = [None, None]
+        self.match_id = uuid.uuid4().hex
+        self._saved_result = False
+        self.member_window = None
+        self.award_player = None
+        self.awards_enabled = tk.BooleanVar(value=True)
+        self._avatar_key = None
+        self.protocol('WM_DELETE_WINDOW', self.close_app)
 
         # デフォルトのプレイヤー名リストを保持
         self.custom_names = ["PLAYER 1", "PLAYER 2", "PLAYER 3", "PLAYER 4"]
@@ -52,6 +70,10 @@ class DartsApp(tk.Tk):
         self.mode_label = tk.Label(header, bg="#0f172a", fg="#67e8f9",
                                    font=("Arial", 11, "bold"))
         self.mode_label.pack(side="right")
+        tk.Checkbutton(header, text="アワード動画", variable=self.awards_enabled,
+                       bg="#0f172a", fg="#cbd5e1", selectcolor="#334155",
+                       activebackground="#0f172a", activeforeground="white",
+                       highlightthickness=0).pack(side="right", padx=16)
 
         modes = tk.Frame(self, bg="#0f172a", padx=18, pady=6)
         modes.pack(fill="x")
@@ -86,7 +108,8 @@ class DartsApp(tk.Tk):
             plus = self.create_button(group, "+", lambda c=command: c(1), width=3)
             plus.pack(side="left")
             self.stepper_buttons.append((minus, plus))
-        self.create_button(config, "NAMES", self.open_name_editor).pack(side="left")
+        self.create_button(config, "MEMBERS", self.open_members).pack(side="left")
+        self.create_button(config, "NAMES", self.open_name_editor, width=7).pack(side="left", padx=4)
         self.create_button(config, "NEW GAME", lambda: self.reset_game(self.game.mode),
                            width=11, accent=True).pack(side="right")
 
@@ -111,10 +134,14 @@ class DartsApp(tk.Tk):
         left.grid(row=0, column=0, sticky="nsew", padx=(0, 16))
         left.columnconfigure(0, weight=1)
         left.rowconfigure(1, weight=1)
-        self.info_lbl = tk.Label(left, bg="#0f172a", fg="#67e8f9",
+        active_header = tk.Frame(left, bg="#0f172a")
+        active_header.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        self.avatar_label = tk.Label(active_header, bg="#0f172a")
+        self.avatar_label.pack(side="left", padx=(0, 8))
+        self.info_lbl = tk.Label(active_header, bg="#0f172a", fg="#67e8f9",
                                  font=("Arial", 14, "bold"), height=2,
                                  wraplength=310)
-        self.info_lbl.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        self.info_lbl.pack(side="left", expand=True, fill="x")
         self.board = DartboardCanvas(left, size=340, on_hit_callback=self.on_board_hit)
         self.board.grid(row=1, column=0, sticky="nsew")
         tk.Label(left, text="Click the board to record a throw", bg="#0f172a",
@@ -165,39 +192,56 @@ class DartsApp(tk.Tk):
             self.hidden_bonus_frame.pack_forget()
 
     def change_players(self, delta):
-        new_val = max(1, min(4, self.p_count_var.get() + delta))
-        if new_val == self.p_count_var.get():
+        previous = self.p_count_var.get()
+        new_val = max(1, min(4, previous + delta))
+        if new_val == previous:
             return
         self.p_count_var.set(new_val)
-        self.reset_game(self.game.mode)
+        if not self.reset_game(self.game.mode):
+            self.p_count_var.set(previous)
 
     def change_rounds(self, delta):
-        new_val = max(1, min(30, self.round_var.get() + delta))
-        if new_val == self.round_var.get():
+        previous = self.round_var.get()
+        new_val = max(1, min(30, previous + delta))
+        if new_val == previous:
             return
         self.round_var.set(new_val)
-        self.reset_game(self.game.mode)
+        if not self.reset_game(self.game.mode):
+            self.round_var.set(previous)
 
     def select_mode(self, mode):
+        previous = self.round_var.get()
         if mode == "COUNTUP":
             self.round_var.set(8)
         else:
             self.round_var.set(15)
-        self.reset_game(mode)
+        if not self.reset_game(mode):
+            self.round_var.set(previous)
 
     def reset_game(self, mode):
-        # 名前リストを渡して初期化
+        if not self.persist_result():
+            return False
+        self.dismiss_award()
+        count = self.p_count_var.get()
+        self.roster = (self.roster + [None]*count)[:count]
+        names = []
+        for i, member_id in enumerate(self.roster):
+            member = self.member_store.get(member_id) if member_id else None
+            names.append(member['name'] if member else self.custom_names[i])
+        self.match_id = uuid.uuid4().hex
+        self._saved_result = False
         self.game.setup_game(
             mode,
             self.p_count_var.get(),
             self.round_var.get(),
-            player_names=self.custom_names,
+            player_names=names,
             hidden_cricket_bonus=self.hidden_bonus_var.get(),
         )
         self.update_hidden_bonus_visibility()
         self.status_msg = ""
         self.score_view.canvas.yview_moveto(0)
         self.update_ui()
+        return True
 
     def open_name_editor(self):
         # 名前編集用ポップアップ
@@ -228,13 +272,18 @@ class DartsApp(tk.Tk):
             )
 
             ent = Entry(row)
-            ent.insert(0, current_name)
+            registered = self.roster[i] if i < len(self.roster) else None
+            ent.insert(0, self.game.players[i].name if registered else current_name)
+            if registered:
+                ent.configure(state="disabled")
             ent.pack(side="right", expand=True, fill="x")
             entries.append(ent)
 
         def save_names():
             # 新しい名前を保存
             for i, ent in enumerate(entries):
+                if i < len(self.roster) and self.roster[i]:
+                    continue
                 new_name = ent.get().strip()
                 if new_name:
                     if i < len(self.custom_names):
@@ -247,7 +296,7 @@ class DartsApp(tk.Tk):
 
             # 現在のゲームのプレイヤー名も即座に更新
             for i in range(len(self.game.players)):
-                if i < len(self.custom_names):
+                if i < len(self.custom_names) and not self.roster[i]:
                     self.game.players[i].name = self.custom_names[i]
 
             self.update_ui()
@@ -258,25 +307,121 @@ class DartsApp(tk.Tk):
         entries[0].focus_set()
         entries[0].selection_range(0, tk.END)
 
-    def on_board_hit(self, raw, mult):
-        if self.game.winner:
+    def open_members(self):
+        if self.member_window and self.member_window.winfo_exists():
+            self.member_window.lift()
             return
-        award = self.game.handle_hit(raw, mult)
-        self.status_msg = award or ""
+        self.dismiss_award()
+        self.member_window = MemberWindow(self)
+
+    def start_roster(self, roster):
+        if not 1 <= len(roster) <= 4 or not self.persist_result():
+            return False
+        self.roster = list(roster)
+        self.p_count_var.set(len(roster))
+        return self.reset_game(self.game.mode)
+
+    def refresh_member_names(self):
+        for i, member_id in enumerate(self.roster):
+            member = self.member_store.get(member_id) if member_id else None
+            if member and i < len(self.game.players):
+                self.game.players[i].name = member['name']
+                for state in self.game.history:
+                    state['players'][i].name = member['name']
+                    if state['winner'] and state['winner'].id == i + 1:
+                        state['winner'].name = member['name']
+                if self.game.winner and self.game.winner.id == i + 1:
+                    self.game.winner.name = member['name']
         self.update_ui()
 
+    def refresh_avatar(self):
+        index = self.game.current_player_idx
+        mid = self.roster[index] if index < len(self.roster) else None
+        member = self.member_store.get(mid) if mid else None
+        path = self.member_store.photo_path(member)
+        key = (mid, str(path), self.game.players[index].name, index)
+        if key == self._avatar_key:
+            return
+        image = Image.new('RGB', (40, 40), '#334155')
+        if path:
+            try:
+                with Image.open(path) as source:
+                    image = ImageOps.fit(source.convert('RGB'), (40, 40), Image.Resampling.LANCZOS)
+            except (OSError, ValueError):
+                path = None
+        if not path:
+            draw = ImageDraw.Draw(image)
+            draw.text((20, 20), f'P{index+1}', fill='white', anchor='mm')
+        self._avatar = ImageTk.PhotoImage(image, master=self)
+        self.avatar_label.configure(image=self._avatar)
+        self._avatar_key = key
+
+    def persist_result(self):
+        try:
+            if self.game.winner and not self._saved_result and any(self.roster):
+                self.member_store.record_match(self.match_id, self.game, self.roster)
+                self._saved_result = True
+            elif not self.game.winner and self._saved_result:
+                self.member_store.remove_match(self.match_id)
+                self._saved_result = False
+            return True
+        except Exception as error:
+            messagebox.showerror('成績を保存できません', str(error), parent=self)
+            return False
+
+    def present_award(self, award, player_name, details=()):
+        if not self.awards_enabled.get():
+            return
+        self.dismiss_award()
+        self.award_player = AwardPlayer(self, award, player_name,
+                                        on_close=lambda: setattr(self, 'award_player', None), details=details)
+        if self.award_player.error:
+            self.status_msg = '動画を読み込めないため、タイトル演出を表示しています。'
+            self.status_lbl.configure(text=self.status_msg)
+
+    def dismiss_award(self):
+        if self.award_player:
+            self.award_player.close()
+            self.award_player = None
+
+    def on_board_hit(self, raw, mult):
+        if self.game.winner or self.award_player:
+            return
+        player_name = self.game.players[self.game.current_player_idx].name
+        award = self.game.handle_hit(raw, mult)
+        self.status_msg = ' / '.join(self.game.last_awards) or award or ''
+        self.update_ui()
+        if award in VIDEO_NAMES:
+            self.present_award(award, player_name, self.game.last_awards[1:])
+        elif self.game.winner:
+            self.present_award('WINNER', self.game.winner.name)
+
     def do_undo(self):
+        self.dismiss_award()
         if self.game.undo():
-            self.status_msg = ""
+            self.status_msg = ''
             self.update_ui()
 
     def do_skip(self):
-        if self.game.winner:
+        if self.game.winner or self.award_player:
             return
-        self.game.save_state()
-        self.game.change_turn()
-        self.status_msg = ""
+        player_name = self.game.players[self.game.current_player_idx].name
+        award = self.game.skip_turn()
+        self.status_msg = ' / '.join(self.game.last_awards)
         self.update_ui()
+        if award in VIDEO_NAMES:
+            self.present_award(award, player_name, self.game.last_awards[1:])
+        elif self.game.winner:
+            self.present_award('WINNER', self.game.winner.name)
+
+    def close_app(self):
+        if not self.persist_result():
+            return
+        self.dismiss_award()
+        if self.member_window:
+            self.member_window.close()
+        self.member_store.close()
+        self.destroy()
 
     def update_ui(self):
         game = self.game
@@ -284,6 +429,7 @@ class DartsApp(tk.Tk):
             self.hidden_bonus_var.set(game.hidden_cricket_bonus)
         curr_p = game.players[game.current_player_idx]
         self.info_lbl.config(text=f"ROUND {game.round} / {game.max_rounds}\n{curr_p.name}")
+        self.refresh_avatar()
         self.mode_label.config(text=game.mode)
         for mode, (button, label) in self.mode_buttons.items():
             # Text also identifies the selection on native macOS buttons.
@@ -320,6 +466,7 @@ class DartsApp(tk.Tk):
         self.update_suggestion(curr_p)
         self.status_lbl.config(text=(f"{game.winner.name} WINS!" if game.winner
                                      else self.status_msg))
+        self.persist_result()
 
     def draw_score_board(self):
         self._player_widgets = []
